@@ -1,0 +1,7 @@
+[package]
+name = "futures-turnstyle"
+version = "0.1.0"
+authors = ["Toby Lawrence <toby@nuclearfurnace.com>"]
+
+[dependencies]
+futures = "^0.1"
