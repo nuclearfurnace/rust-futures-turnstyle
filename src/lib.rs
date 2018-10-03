@@ -44,17 +44,18 @@ extern crate futures;
 
 use futures::{prelude::*, sync::oneshot};
 use std::{
-    collections::VecDeque, sync::{Arc, Mutex},
+    collections::VecDeque,
+    sync::{Arc, Mutex, atomic::AtomicUsize, atomic::Ordering::SeqCst},
 };
 
 /// A future that waits to be notified, based on its place in line.
 pub struct Waiter {
-    inner: oneshot::Receiver<()>,
+    inner: oneshot::Receiver<usize>,
 }
 
 impl Future for Waiter {
     type Error = ();
-    type Item = ();
+    type Item = usize;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> { self.inner.poll().map_err(|_| ()) }
 }
@@ -62,12 +63,15 @@ impl Future for Waiter {
 /// An ordered queue of waiting participants.
 ///
 /// Every turn of the turnstyle, the next participant in queue is notified and removed from the
-/// queue.  If the queue is empty, `turn` is a noop.
+/// queue.  If the queue is empty, `turn` is a noop.  Waiters receive their all-time position
+/// through the turnstyle as their item i.e. the first waiter receives 0, the second receives 1,
+/// etc.
 ///
 /// Turnstyles can be cloned and are safe to share across threads.
 #[derive(Clone)]
 pub struct Turnstyle {
-    waiters: Arc<Mutex<VecDeque<oneshot::Sender<()>>>>,
+    waiters: Arc<Mutex<VecDeque<oneshot::Sender<usize>>>>,
+    version: Arc<AtomicUsize>,
 }
 
 impl Turnstyle {
@@ -75,6 +79,7 @@ impl Turnstyle {
     pub fn new() -> Turnstyle {
         Turnstyle {
             waiters: Arc::new(Mutex::new(VecDeque::new())),
+            version: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -102,7 +107,8 @@ impl Turnstyle {
         };
 
         if let Some(w) = waiter {
-            w.send(()).expect("turnstyle failed to signal next in line");
+            let version = self.version.fetch_add(1, SeqCst);
+            w.send(version).expect("turnstyle failed to signal next in line");
         }
     }
 }
@@ -110,7 +116,7 @@ impl Turnstyle {
 #[cfg(test)]
 mod tests {
     use super::Turnstyle;
-    use futures::{future, Future};
+    use futures::{future, Future, Async};
 
     #[test]
     fn single_waiter() {
@@ -156,4 +162,40 @@ mod tests {
         }).wait()
             .unwrap();
     }
+
+    #[test]
+    fn versions() {
+        future::lazy(|| {
+            let ts = Turnstyle::new();
+            let mut w1 = ts.join();
+            let mut w2 = ts.join();
+            let mut w3 = ts.join();
+
+            ts.turn();
+            ts.turn();
+            ts.turn();
+
+            if let Async::Ready(w1v) = w1.poll().unwrap() {
+                assert_eq!(w1v, 0);
+            } else {
+                panic!("waiter 1 was not ready");
+            }
+
+            if let Async::Ready(w2v) = w2.poll().unwrap() {
+                assert_eq!(w2v, 1);
+            } else {
+                panic!("waiter 2 was not ready");
+            }
+
+            if let Async::Ready(w3v) = w3.poll().unwrap() {
+                assert_eq!(w3v, 2);
+            } else {
+                panic!("waiter 3 was not ready");
+            }
+
+            future::ok::<_, ()>(())
+        }).wait()
+            .unwrap();
+    }
+
 }
