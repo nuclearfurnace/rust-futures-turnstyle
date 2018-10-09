@@ -99,8 +99,9 @@ impl Turnstyle {
 
     /// Turns once, letting a single waiter through.
     ///
-    /// The `Waiter` is notified by the future completing.
-    pub fn turn(&self) {
+    /// The `Waiter` is notified by the future completing.  The function returns `true` if a waiter
+    /// was found/notified, `false` otherwise.
+    pub fn turn(&self) -> bool {
         let waiter = {
             let mut waiters = self.waiters.lock().unwrap();
             waiters.pop_front()
@@ -109,7 +110,16 @@ impl Turnstyle {
         if let Some(w) = waiter {
             let version = self.version.fetch_add(1, SeqCst);
             w.send(version).expect("turnstyle failed to signal next in line");
+            true
+        } else {
+            false
         }
+    }
+}
+
+impl Drop for Turnstyle {
+    fn drop(&mut self) {
+        while self.turn() {}
     }
 }
 
@@ -198,4 +208,26 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn on_drop() {
+        future::lazy(|| {
+            let ts = Turnstyle::new();
+            let mut w1 = ts.join();
+            let mut w2 = ts.join();
+            let mut w3 = ts.join();
+
+            assert!(!w1.poll().unwrap().is_ready());
+            assert!(!w2.poll().unwrap().is_ready());
+            assert!(!w2.poll().unwrap().is_ready());
+
+            drop(ts);
+
+            assert!(w1.poll().unwrap().is_ready());
+            assert!(w2.poll().unwrap().is_ready());
+            assert!(w3.poll().unwrap().is_ready());
+
+            future::ok::<_, ()>(())
+        }).wait()
+            .unwrap();
+    }
 }
