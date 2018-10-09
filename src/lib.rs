@@ -71,7 +71,7 @@ impl Future for Waiter {
 /// dropped, all of its waiters will be notified.
 #[derive(Clone)]
 pub struct Turnstyle {
-    waiters: Arc<Mutex<VecDeque<oneshot::Sender<usize>>>>,
+    waiters: Arc<Mutex<VecDeque<(usize, oneshot::Sender<usize>)>>>,
     version: Arc<AtomicUsize>,
 }
 
@@ -86,16 +86,18 @@ impl Turnstyle {
 
     /// Joins the waiting queue.
     ///
-    /// Returns a `Waiter` to the caller, which will complete when the turnstyle turns and reaches
-    /// the caller's position in the queue.
-    pub fn join(&self) -> Waiter {
+    /// Returns a tuple of (`usize`, `Waiter`) to the caller.  The `usize` represents the waiter's
+    /// ticket in the queue since creation of the turnstyle, and the `Waiter` is a future that will
+    /// complete when the turnstyle turns and reaches the caller's position in the queue.
+    pub fn join(&self) -> (usize, Waiter) {
+        let version = self.version.fetch_add(1, SeqCst);
         let (tx, rx) = oneshot::channel();
         {
             let mut waiters = self.waiters.lock().expect("turnstyle unable to join line");
-            waiters.push_back(tx);
+            waiters.push_back((version, tx));
         }
 
-        Waiter { inner: rx }
+        (version, Waiter { inner: rx })
     }
 
     /// Turns once, letting a single waiter through.
@@ -108,9 +110,12 @@ impl Turnstyle {
             waiters.pop_front()
         };
 
-        if let Some(w) = waiter {
-            let version = self.version.fetch_add(1, SeqCst);
-            w.send(version).expect("turnstyle failed to signal next in line");
+        if let Some((v, w)) = waiter {
+            // We drop the result of the send here because our waiter may have disappeared.  This
+            // is fine, because we don't care about notifying _at least_ one waiter, only about
+            // making sure we've removed one waiter from the queue, whether we truly notified
+            // someone or not.
+            let _ = w.send(v);
             true
         } else {
             false
@@ -134,7 +139,7 @@ mod tests {
         future::lazy(|| {
             let ts = Turnstyle::new();
 
-            let mut w = ts.join();
+            let (_, mut w) = ts.join();
             assert!(!w.poll().unwrap().is_ready());
 
             ts.turn();
@@ -149,9 +154,9 @@ mod tests {
     fn multiple_waiters() {
         future::lazy(|| {
             let ts = Turnstyle::new();
-            let mut w1 = ts.join();
-            let mut w2 = ts.join();
-            let mut w3 = ts.join();
+            let (_, mut w1) = ts.join();
+            let (_, mut w2) = ts.join();
+            let (_, mut w3) = ts.join();
 
             assert!(!w1.poll().unwrap().is_ready());
             assert!(!w2.poll().unwrap().is_ready());
@@ -178,9 +183,13 @@ mod tests {
     fn versions() {
         future::lazy(|| {
             let ts = Turnstyle::new();
-            let mut w1 = ts.join();
-            let mut w2 = ts.join();
-            let mut w3 = ts.join();
+            let (v1, mut w1) = ts.join();
+            let (v2, mut w2) = ts.join();
+            let (v3, mut w3) = ts.join();
+
+            assert_eq!(v1, 0);
+            assert_eq!(v2, 1);
+            assert_eq!(v3, 2);
 
             ts.turn();
             ts.turn();
@@ -213,9 +222,9 @@ mod tests {
     fn on_drop() {
         future::lazy(|| {
             let ts = Turnstyle::new();
-            let mut w1 = ts.join();
-            let mut w2 = ts.join();
-            let mut w3 = ts.join();
+            let (_, mut w1) = ts.join();
+            let (_, mut w2) = ts.join();
+            let (_, mut w3) = ts.join();
 
             assert!(!w1.poll().unwrap().is_ready());
             assert!(!w2.poll().unwrap().is_ready());
