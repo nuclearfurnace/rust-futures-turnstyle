@@ -1,6 +1,6 @@
 [package]
 name = "futures-turnstyle"
-version = "2.0.0"
+version = "2.0.1"
 authors = ["Toby Lawrence <toby@nuclearfurnace.com>"]
 description = "Futures-aware turnstyle-esque, sequential notifications to waiters."
 repository = "https://github.com/nuclearfurnace/rust-futures-turnstyle"

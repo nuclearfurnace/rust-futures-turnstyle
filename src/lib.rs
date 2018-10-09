@@ -67,7 +67,8 @@ impl Future for Waiter {
 /// through the turnstyle as their item i.e. the first waiter receives 0, the second receives 1,
 /// etc.
 ///
-/// Turnstyles can be cloned and are safe to share across threads.
+/// `Turnstyle`s can be cloned and are safe to share across threads.  When a `Turnstyle` is
+/// dropped, all of its waiters will be notified.
 #[derive(Clone)]
 pub struct Turnstyle {
     waiters: Arc<Mutex<VecDeque<oneshot::Sender<usize>>>>,
