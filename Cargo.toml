@@ -8,4 +8,4 @@ readme = "README.md"
 license-file = "LICENSE"
 
 [dependencies]
-futures = "^0.1"
+futures = "^0.3"
